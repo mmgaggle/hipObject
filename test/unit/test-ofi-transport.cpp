@@ -8,10 +8,14 @@
  * sendRequest callback, and it writes the object into the client's buffer
  * over tcp or shm before the reply comes back, as a Ceph OSD does. */
 
+#include <cctype>
+#include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <hip/hip_runtime.h>
@@ -54,7 +58,16 @@ int fakeSendRequest(void* ctx, const char* token, size_t tokenLen) {
   }
   iovec iov{s->object.data() + s->objectOffset, t->size};
   const std::vector<ofi_rma::Endpoint::write_t> writes = {{0, t->size, 0}};
-  s->writeResult = s->ep->write(*t, &iov, 1, writes, kWriteBudget);
+  /* On a connected provider (verbs;ofi_rxm) a write with a revoked key
+   * breaks the connection, and writes fail, flushed, until the provider
+   * reconnects; a Ceph OSD delivers inline meanwhile, this server waits. */
+  for (int i = 0; i < 50; ++i) {
+    s->writeResult = s->ep->write(*t, &iov, 1, writes, kWriteBudget);
+    if (s->writeResult != -ECANCELED) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
   return s->writeResult == 0 ? 0 : -1;
 }
 
@@ -74,6 +87,33 @@ std::vector<char> pattern(size_t n, int seed) {
     v[i] = static_cast<char>(i * 7 + seed);
   }
   return v;
+}
+
+/* tcp and shm, which need no hardware, and verbs;ofi_rxm when
+ * OFI_RMA_TEST_VERBS_NODE names the address of an RDMA device, a soft-RoCE
+ * one say. Soft-RoCE needs FI_UNIVERSE_SIZE=16, and re-keying a window
+ * needs the verbs registration cache off; libfabric reads both once. */
+std::vector<ProviderParam> testProviders() {
+  std::vector<ProviderParam> v = {{"tcp", "127.0.0.1"}, {"shm", ""}};
+  if (const char* node = std::getenv("OFI_RMA_TEST_VERBS_NODE");
+      node && *node) {
+    setenv("FI_UNIVERSE_SIZE", "16", 0);
+    setenv("FI_MR_CACHE_MONITOR", "disabled", 0);
+    v.push_back({"verbs;ofi_rxm", node});
+  }
+  return v;
+}
+
+/* gtest names allow letters, digits and underscores */
+std::string providerTestName(
+  const ::testing::TestParamInfo<ProviderParam>& info) {
+  std::string n = info.param.provider;
+  for (auto& c : n) {
+    if (!std::isalnum(static_cast<unsigned char>(c))) {
+      c = '_';
+    }
+  }
+  return n;
 }
 
 bool haveGpu() {
@@ -278,11 +318,8 @@ TEST_P(OfiTransportTest, GetIntoAGpuBuffer) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Providers, OfiTransportTest,
-                         ::testing::Values(ProviderParam{"tcp", "127.0.0.1"},
-                                           ProviderParam{"shm", ""}),
-                         [](const auto& info) {
-                           return std::string(info.param.provider);
-                         });
+                         ::testing::ValuesIn(testProviders()),
+                         providerTestName);
 
 TEST(OfiTransportInit, RefusesBadSettings) {
   hipObjConfig_t cfg{};
