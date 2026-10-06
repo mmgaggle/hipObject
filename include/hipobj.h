@@ -81,6 +81,7 @@ typedef enum {
 #ifdef HIPOBJECT_OFI_API
   hipObjOpNotSupported, /*!< The active transport cannot do this operation */
 #endif
+  hipObjChecksumMismatch, /*!< The bytes do not match the checksum */
 } hipObjOpError_t;
 
 /*!
@@ -534,6 +535,59 @@ HIPOBJ_API hipObjError_t hipObjParseRdmaReply(const char* reply,
  */
 HIPOBJ_API hipObjError_t hipObjTokenClientNic(const char* token, char* nicIp,
                                               size_t nicIpLen);
+
+/* -------------------------------------------------------
+ *  CHECKSUMS (CRC-64/NVME)
+ * ------------------------------------------------------- */
+
+/*! @brief Size of a CRC64NVME checksum in S3's base64 form, with the NUL
+ *  @ingroup io */
+#define HIPOBJ_CRC64NVME_B64_SIZE 13
+
+/*!
+ * @brief Compute the CRC64NVME checksum of a buffer, as S3 renders it
+ *
+ * Writes the 12-character base64 of the big-endian CRC-64/NVME of
+ * [devPtr + offset, devPtr + offset + size): the value of an
+ * x-amz-checksum-crc64nvme header. Send it with a PUT, and the server
+ * rejects an upload whose bytes do not match. Device memory is read
+ * through the host, so this costs a copy of the range.
+ *
+ * @param devPtr  GPU or host buffer
+ * @param size    Number of bytes to checksum
+ * @param offset  Byte offset into the buffer
+ * @param out     Receives the base64 text and a NUL
+ * @return hipObjError_t
+ * @ingroup io
+ */
+HIPOBJ_API hipObjError_t
+hipObjChecksumCrc64Nvme(const void* devPtr, size_t size, off_t offset,
+                        char out[HIPOBJ_CRC64NVME_B64_SIZE]);
+
+/*!
+ * @brief Verify a buffer against a CRC64NVME checksum header
+ *
+ * Accepts the value of either header:
+ * - x-amz-rdma-checksum: "CRC64NVME <base64>". Ceph sends it with an
+ *   out-of-band GET, computed by the storage nodes from the bytes they
+ *   placed. It covers exactly the bytes delivered, so it also checks a
+ *   ranged GET.
+ * - x-amz-checksum-crc64nvme: "<base64>". S3 sends it for a GET with
+ *   x-amz-checksum-mode: ENABLED and no range. It covers the whole object,
+ *   so pass it only when the GET read the whole object.
+ *
+ * @param devPtr  GPU or host buffer the GET filled
+ * @param size    Number of bytes the GET delivered
+ * @param offset  Byte offset into the buffer where they start
+ * @param header  The header's value
+ * @return hipObjSuccess when the bytes match, hipObjChecksumMismatch when
+ *         they do not, hipObjInvalidValue for a malformed or composite
+ *         (multipart) value
+ * @ingroup io
+ */
+HIPOBJ_API hipObjError_t hipObjVerifyCrc64Nvme(const void* devPtr, size_t size,
+                                               off_t offset,
+                                               const char* header);
 
 /*!
  * @brief Return the library version as a string

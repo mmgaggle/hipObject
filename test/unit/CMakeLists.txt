@@ -119,6 +119,9 @@ hipobj_add_test(test-seams
 hipobj_add_test(test-buffer-registration
   test-buffer-registration.cpp)
 
+hipobj_add_test(test-crc64nvme
+  test-crc64nvme.cpp)
+
 if(HIPOBJECT_OFI_API)
   # The libfabric transport over the tcp and shm providers, which need no
   # RDMA hardware. An ofi-rma endpoint in the test plays the server.

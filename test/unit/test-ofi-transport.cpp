@@ -151,6 +151,20 @@ TEST_P(OfiTransportTest, RangedGetLandsAtItsOffset) {
             std::vector<char>(buf.begin(), buf.begin() + ofs));
   EXPECT_EQ(std::vector<char>(n - ofs - len, 0),
             std::vector<char>(buf.begin() + ofs + len, buf.end()));
+  /* Ceph's x-amz-rdma-checksum covers the delivered range, which S3's own
+   * checksum headers cannot */
+  char b64[HIPOBJ_CRC64NVME_B64_SIZE] = {};
+  ASSERT_EQ(
+    hipObjSuccess,
+    hipObjChecksumCrc64Nvme(server_.object.data() + ofs, len, 0, b64).opError);
+  const std::string rdmaChecksum = std::string("CRC64NVME ") + b64;
+  EXPECT_EQ(
+    hipObjSuccess,
+    hipObjVerifyCrc64Nvme(buf.data(), len, ofs, rdmaChecksum.c_str()).opError);
+  buf[ofs + 1] ^= 1;
+  EXPECT_EQ(
+    hipObjChecksumMismatch,
+    hipObjVerifyCrc64Nvme(buf.data(), len, ofs, rdmaChecksum.c_str()).opError);
   /* a range past the buffer gets no token */
   EXPECT_NE(
     hipObjSuccess,

@@ -9,6 +9,7 @@ set(HIPOBJ_SOURCES
   state.cpp
   buffer.cpp
   common/hip-seam.cpp
+  common/crc64nvme.cpp
   common/ibv-wrapper.cpp
   common/rdma-topology.cpp
   common/rdma-numa-wrapper.cpp

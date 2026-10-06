@@ -17,6 +17,7 @@
 
 #include "buffer.h"
 #include "control.h"
+#include "crc64nvme.h"
 #include "hip-seam.h"
 #include "hipobj-private.h"
 #include "ibv-wrapper.h"
@@ -246,6 +247,34 @@ static hipObjError_t copyTokenOut(const std::string& encoded, char** outToken) {
   return HIPOBJ_SUCCESS;
 }
 
+/* CRC-64/NVME of [ptr, ptr + size). Device memory is copied to the host a
+ * chunk at a time; host memory is read in place. */
+static int bufferCrc64nvme(const void* ptr, size_t size, uint64_t& crc) {
+  const char* p = static_cast<const char*>(ptr);
+  if (!isDevicePointer(const_cast<char*>(p))) {
+    crc = crc64nvme(0, p, size);
+    return 0;
+  }
+  auto memcpyFn = hipOps().hipMemcpy;
+  if (!memcpyFn) {
+    return -1;
+  }
+  constexpr size_t kChunk = 4 << 20;
+  std::vector<char> host(size < kChunk ? size : kChunk);
+  uint64_t c = 0;
+  for (size_t done = 0; done < size;) {
+    const size_t n = size - done < kChunk ? size - done : kChunk;
+    if (memcpyFn(host.data(), p + done, n, hipMemcpyDeviceToHost) !=
+        hipSuccess) {
+      return -1;
+    }
+    c = crc64nvme(c, host.data(), n);
+    done += n;
+  }
+  crc = c;
+  return 0;
+}
+
 static void resetDriverState(DriverState& state) {
   state.initialized = false;
   state.gpuDevice = 0;
@@ -345,6 +374,8 @@ const char* hipObjGetErrorString(hipObjOpError_t err) {
       case hipObjOpNotSupported:
         return "Operation not supported by the libfabric transport";
 #endif /* HIPOBJECT_OFI_API */
+      case hipObjChecksumMismatch:
+        return "Checksum mismatch";
 #ifdef HIPOBJECT_V2_API
       case hipObjNotSupported:
         return "hipobj-rc-v2 not supported by server";
@@ -757,6 +788,51 @@ hipObjError_t hipObjTokenClientNic(const char* token, char* nicIp,
 #endif
   if (!hipObj::parseClientNicFromTokenHex(token, nicIp, nicIpLen)) {
     return {hipObjInvalidValue, 0};
+  }
+  return HIPOBJ_SUCCESS;
+} catch (...) {
+  return hipObj::handleException();
+}
+
+hipObjError_t hipObjChecksumCrc64Nvme(const void* devPtr, size_t size,
+                                      off_t offset,
+                                      char out[HIPOBJ_CRC64NVME_B64_SIZE]) try {
+  if (!devPtr || !out || offset < 0) {
+    return {hipObjInvalidValue, 0};
+  }
+  uint64_t crc = 0;
+  if (hipObj::bufferCrc64nvme(static_cast<const char*>(devPtr) + offset, size,
+                              crc) != 0) {
+    return {hipObjInternalError, 0};
+  }
+  const std::string armored = hipObj::armorCrc64nvme(crc);
+  std::memcpy(out, armored.c_str(), armored.size() + 1);
+  return HIPOBJ_SUCCESS;
+} catch (...) {
+  return hipObj::handleException();
+}
+
+hipObjError_t hipObjVerifyCrc64Nvme(const void* devPtr, size_t size,
+                                    off_t offset, const char* header) try {
+  if (!devPtr || !header || offset < 0) {
+    return {hipObjInvalidValue, 0};
+  }
+  uint64_t expected = 0;
+  if (!hipObj::parseCrc64nvmeHeader(header, expected)) {
+    return {hipObjInvalidValue, 0};
+  }
+  uint64_t actual = 0;
+  if (hipObj::bufferCrc64nvme(static_cast<const char*>(devPtr) + offset, size,
+                              actual) != 0) {
+    return {hipObjInternalError, 0};
+  }
+  if (actual != expected) {
+    fprintf(stderr,
+            "hipObj: CRC64NVME mismatch over %zu bytes: the server sent %s, "
+            "the buffer holds %s\n",
+            size, hipObj::armorCrc64nvme(expected).c_str(),
+            hipObj::armorCrc64nvme(actual).c_str());
+    return {hipObjChecksumMismatch, 0};
   }
   return HIPOBJ_SUCCESS;
 } catch (...) {

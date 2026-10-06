@@ -13,6 +13,12 @@
   The transport serves GET only: `hipObjPut()` returns the new
   `hipObjOpNotSupported`. After a GET that fails, the buffer's window gets a
   new key, so that a late write cannot land in it.
+- CRC-64/NVME checksums. `hipObjChecksumCrc64Nvme()` computes the value of
+  an `x-amz-checksum-crc64nvme` header for a GPU or host buffer, to send
+  with a PUT. `hipObjVerifyCrc64Nvme()` checks a buffer against that header
+  or against Ceph's `x-amz-rdma-checksum`, which covers the bytes delivered
+  and so also checks a ranged GET. A mismatch returns the new
+  `hipObjChecksumMismatch`.
 
 ### Changed
 
