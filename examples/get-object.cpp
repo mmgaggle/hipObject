@@ -48,6 +48,47 @@ static int stubRecvReply(void* ctx, char* reply, size_t* replyLen) {
   return 0;
 }
 
+#if defined(HIPOBJ_HAVE_CURL)
+/* Check the GET's bytes against the checksums the server sent: Ceph's
+ * x-amz-rdma-checksum for the bytes delivered, and S3's
+ * x-amz-checksum-crc64nvme for the whole object. */
+static int verifyChecksums(void* devPtr, size_t size,
+                           const hipObjS3CurlCtx& ctx) {
+  const size_t got = ctx.bytesTransferred
+                       ? static_cast<size_t>(ctx.bytesTransferred)
+                       : size;
+  char mine[HIPOBJ_CRC64NVME_B64_SIZE] = {};
+  if (hipObjChecksumCrc64Nvme(devPtr, got, 0, mine).opError == hipObjSuccess) {
+    fprintf(stdout, "CRC64NVME of the %zu bytes received: %s\n", got, mine);
+  }
+  struct {
+    const char* header;
+    const char* value;
+  } sums[] = {{"x-amz-rdma-checksum", ctx.rdmaChecksum},
+              {"x-amz-checksum-crc64nvme", ctx.objectChecksum}};
+  int rc = 0;
+  for (const auto& sum : sums) {
+    if (sum.value[0] == '\0') {
+      continue;
+    }
+    hipObjError_t e = hipObjVerifyCrc64Nvme(devPtr, got, 0, sum.value);
+    if (e.opError == hipObjInvalidValue) {
+      /* a multipart composite is not a checksum of the bytes */
+      fprintf(stdout, "%s %s: not verifiable, skipped\n", sum.header,
+              sum.value);
+      continue;
+    }
+    fprintf(stdout, "%s %s: %s\n", sum.header, sum.value,
+            e.opError == hipObjSuccess ? "verified"
+                                       : hipObjGetErrorString(e.opError));
+    if (e.opError != hipObjSuccess) {
+      rc = 1;
+    }
+  }
+  return rc;
+}
+#endif
+
 int main(int argc, char* argv[]) {
   if (argc < 2) {
     fprintf(stderr,
@@ -84,7 +125,22 @@ int main(int argc, char* argv[]) {
   cfg.gpuDevice = 0;
   cfg.nicHint = std::getenv("HIPOBJ_NIC_HINT");
 
-  hipObjError_t err = hipObjInit(&cfg);
+  hipObjError_t err;
+#if defined(HIPOBJECT_OFI_API)
+  /* HIPOBJ_OFI_PROVIDER selects the libfabric transport: tcp, shm,
+   * "verbs;ofi_rxm" or uet, as the server's writers run it. */
+  hipObjOfiConfig_t ofi{};
+  ofi.provider = std::getenv("HIPOBJ_OFI_PROVIDER");
+  ofi.domain = std::getenv("HIPOBJ_OFI_DOMAIN");
+  ofi.node = std::getenv("HIPOBJ_OFI_NODE");
+  ofi.service = std::getenv("HIPOBJ_OFI_SERVICE");
+  if (ofi.provider && ofi.provider[0] != '\0') {
+    err = hipObjInitOfi(&cfg, &ofi);
+  } else
+#endif
+  {
+    err = hipObjInit(&cfg);
+  }
   if (err.opError != hipObjSuccess) {
     fprintf(stderr, "hipObjInit failed: %s\n",
             hipObjGetErrorString(err.opError));
@@ -120,6 +176,9 @@ int main(int argc, char* argv[]) {
     curlCtx.objectSize = objSize;
     curlCtx.devPtr = devPtr;
     curlCtx.isPut = 0;
+    curlCtx.accessKey = std::getenv("AWS_ACCESS_KEY_ID");
+    curlCtx.secretKey = std::getenv("AWS_SECRET_ACCESS_KEY");
+    curlCtx.region = std::getenv("AWS_REGION");
     ops.sendRequest = hipObjS3CurlSendRequest;
     ops.recvReply = hipObjS3CurlRecvReply;
     opsCtx = &curlCtx;
@@ -139,6 +198,11 @@ int main(int argc, char* argv[]) {
     exitCode = 1;
   } else {
     fprintf(stdout, "hipObjGet succeeded for %zu bytes\n", objSize);
+#if defined(HIPOBJ_HAVE_CURL)
+    if (live) {
+      exitCode = verifyChecksums(devPtr, objSize, curlCtx);
+    }
+#endif
   }
 
 #if defined(HIPOBJ_HAVE_CURL)

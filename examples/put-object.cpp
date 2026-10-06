@@ -120,6 +120,14 @@ int main(int argc, char* argv[]) {
     curlCtx.objectSize = objSize;
     curlCtx.devPtr = devPtr;
     curlCtx.isPut = 1;
+    curlCtx.accessKey = std::getenv("AWS_ACCESS_KEY_ID");
+    curlCtx.secretKey = std::getenv("AWS_SECRET_ACCESS_KEY");
+    curlCtx.region = std::getenv("AWS_REGION");
+    /* the server checks the bytes it reads against this */
+    if (hipObjChecksumCrc64Nvme(devPtr, objSize, 0, curlCtx.putChecksum)
+          .opError != hipObjSuccess) {
+      curlCtx.putChecksum[0] = '\0';
+    }
     ops.sendRequest = hipObjS3CurlSendRequest;
     ops.recvReply = hipObjS3CurlRecvReply;
     opsCtx = &curlCtx;

@@ -19,6 +19,11 @@
   or against Ceph's `x-amz-rdma-checksum`, which covers the bytes delivered
   and so also checks a ranged GET. A mismatch returns the new
   `hipObjChecksumMismatch`.
+- The get-object and put-object examples sign requests with SigV4 when
+  `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set. get-object
+  selects the libfabric transport with `HIPOBJ_OFI_PROVIDER` and verifies
+  the checksums the server sends. put-object sends
+  `x-amz-checksum-crc64nvme` with the upload.
 
 ### Changed
 

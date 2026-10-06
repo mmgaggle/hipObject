@@ -20,10 +20,27 @@ struct HeaderState {
   hipObjS3CurlCtx* cfg;
 };
 
+/* The value of header line `line` when it is header `name` (lower case,
+ * with the colon), trimmed; false for any other header. */
+bool headerValue(const std::string& line, const char* name, std::string& out) {
+  if (line.rfind(name, 0) != 0) {
+    return false;
+  }
+  std::string val = line.substr(std::strlen(name));
+  while (!val.empty() &&
+         (val.back() == '\r' || val.back() == '\n' || val.back() == ' ')) {
+    val.pop_back();
+  }
+  size_t start = val.find_first_not_of(' ');
+  out = start == std::string::npos ? std::string() : val.substr(start);
+  return true;
+}
+
 size_t headerCallback(char* buffer, size_t size, size_t nitems,
                       void* userdata) {
   size_t total = size * nitems;
   auto* state = static_cast<HeaderState*>(userdata);
+  hipObjS3CurlCtx* cfg = state->cfg;
   std::string line(buffer, total);
   // HTTP header names are case-insensitive.
   for (char& c : line) {
@@ -34,21 +51,26 @@ size_t headerCallback(char* buffer, size_t size, size_t nitems,
       break;
     }
   }
-  const char* prefix = "x-amz-rdma-reply:";
-  if (line.rfind(prefix, 0) == 0) {
-    std::string val = line.substr(std::strlen(prefix));
-    while (!val.empty() &&
-           (val.back() == '\r' || val.back() == '\n' || val.back() == ' ')) {
-      val.pop_back();
-    }
-    size_t start = val.find_first_not_of(' ');
-    if (start != std::string::npos) {
-      val = val.substr(start);
-    }
-    std::snprintf(state->cfg->lastReply, sizeof(state->cfg->lastReply), "%s",
+  std::string val;
+  if (headerValue(line, "x-amz-rdma-reply:", val)) {
+    std::snprintf(cfg->lastReply, sizeof(cfg->lastReply), "%s", val.c_str());
+  } else if (headerValue(line, "x-amz-rdma-checksum:", val)) {
+    std::snprintf(cfg->rdmaChecksum, sizeof(cfg->rdmaChecksum), "%s",
                   val.c_str());
+  } else if (headerValue(line, "x-amz-checksum-crc64nvme:", val)) {
+    std::snprintf(cfg->objectChecksum, sizeof(cfg->objectChecksum), "%s",
+                  val.c_str());
+  } else if (headerValue(line, "x-amz-rdma-bytes-transferred:", val)) {
+    cfg->bytesTransferred = std::strtoull(val.c_str(), nullptr, 10);
   }
   return total;
+}
+
+/* An out-of-band GET has no body. A server that falls back sends the object
+ * in the body, which this example does not use: discard it rather than
+ * writing it to stdout. */
+size_t discardBody(char*, size_t size, size_t nitems, void*) {
+  return size * nitems;
 }
 
 std::string buildUrl(const hipObjS3CurlCtx* cfg) {
@@ -93,15 +115,38 @@ int hipObjS3CurlSendRequest(void* ctx, const char* token, size_t tokenLen) {
   struct curl_slist* headers = nullptr;
   headers = curl_slist_append(headers, headerToken.c_str());
   headers = curl_slist_append(headers, "Content-Length: 0");
+  if (cfg->isPut) {
+    if (cfg->putChecksum[0] != '\0') {
+      const std::string sum = std::string("x-amz-checksum-crc64nvme: ") +
+                              cfg->putChecksum;
+      headers = curl_slist_append(headers, sum.c_str());
+    }
+  } else {
+    /* the stored full-object checksum, for a GET of the whole object */
+    headers = curl_slist_append(headers, "x-amz-checksum-mode: ENABLED");
+  }
 
   HeaderState state{cfg};
   cfg->lastReply[0] = '\0';
+  cfg->rdmaChecksum[0] = '\0';
+  cfg->objectChecksum[0] = '\0';
+  cfg->bytesTransferred = 0;
 
   curl_easy_setopt(curl, CURLOPT_URL, buildUrl(cfg).c_str());
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, cfg->isPut ? "PUT" : "GET");
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCallback);
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discardBody);
+  std::string sigv4;
+  std::string userpwd;
+  if (cfg->accessKey && cfg->secretKey) {
+    sigv4 = std::string("aws:amz:") +
+            (cfg->region ? cfg->region : "us-east-1") + ":s3";
+    userpwd = std::string(cfg->accessKey) + ":" + cfg->secretKey;
+    curl_easy_setopt(curl, CURLOPT_AWS_SIGV4, sigv4.c_str());
+    curl_easy_setopt(curl, CURLOPT_USERPWD, userpwd.c_str());
+  }
 
   CURLcode rc = curl_easy_perform(curl);
   const long httpCode = rc == CURLE_OK ? responseCode(curl) : -1;
