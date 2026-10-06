@@ -513,6 +513,20 @@ HIPOBJ_API hipObjError_t hipObjGetRdmaToken(const void* devPtr, size_t size,
                                             int op, char** outToken);
 
 /*!
+ * @brief Mint a token for part of a registered buffer
+ * Like hipObjGetRdmaToken(), for [devPtr + offset, devPtr + offset + size).
+ * devPtr must be the address that was registered. Several tokens for
+ * different parts of one buffer can be in use at the same time, so one
+ * registration serves many concurrent ranged GETs. A range that does not
+ * fit in the registration returns hipObjInvalidValue. After a GET, call
+ * hipObjBufSync() with the same size and offset.
+ * @ingroup io
+ */
+HIPOBJ_API hipObjError_t hipObjGetRdmaTokenAt(const void* devPtr, size_t size,
+                                              size_t offset, int op,
+                                              char** outToken);
+
+/*!
  * @brief Release a token allocated by hipObjGetRdmaToken()
  * @ingroup io
  */

@@ -294,6 +294,48 @@ TEST_P(OfiTransportTest, TokenApiGetThenBufSync) {
   EXPECT_EQ(hipObjSuccess, hipObjPutRdmaToken(token).opError);
 }
 
+TEST_P(OfiTransportTest, TokenApiGetsPartOfABuffer) {
+  /* one registration, a token per part, as a loader that issues many
+   * ranged GETs into one buffer does */
+  const size_t part = 64 << 10;
+  server_.object = pattern(part, 13);
+  std::vector<char> buf(3 * part, 0);
+  ASSERT_EQ(hipObjSuccess,
+            hipObjBufRegisterHost(buf.data(), buf.size()).opError);
+  char* token = nullptr;
+  ASSERT_EQ(hipObjSuccess, hipObjGetRdmaTokenAt(buf.data(), part, part,
+                                                HIPOBJ_RDMA_OP_GET, &token)
+                             .opError);
+  ASSERT_NE(nullptr, token);
+  ASSERT_EQ(0, fakeSendRequest(&server_, token, std::strlen(token)));
+  EXPECT_EQ(
+    hipObjSuccess,
+    hipObjBufSync(buf.data(), part, part, HIPOBJ_SYNC_TO_DEVICE).opError);
+  EXPECT_EQ(0, std::memcmp(buf.data() + part, server_.object.data(), part));
+  EXPECT_EQ(std::vector<char>(part, 0),
+            std::vector<char>(buf.begin(), buf.begin() + part));
+  EXPECT_EQ(std::vector<char>(part, 0),
+            std::vector<char>(buf.begin() + 2 * part, buf.end()));
+  EXPECT_EQ(hipObjSuccess, hipObjPutRdmaToken(token).opError);
+
+  /* a range past the end of the registration */
+  token = nullptr;
+  EXPECT_EQ(hipObjInvalidValue,
+            hipObjGetRdmaTokenAt(buf.data(), part + 1, 2 * part,
+                                 HIPOBJ_RDMA_OP_GET, &token)
+              .opError);
+  EXPECT_EQ(hipObjInvalidValue,
+            hipObjGetRdmaTokenAt(buf.data(), 1, 3 * part + 1,
+                                 HIPOBJ_RDMA_OP_GET, &token)
+              .opError);
+  EXPECT_EQ(nullptr, token);
+  /* only the registered address names the buffer */
+  EXPECT_EQ(hipObjBufNotRegistered,
+            hipObjGetRdmaTokenAt(buf.data() + part, part, 0, HIPOBJ_RDMA_OP_GET,
+                                 &token)
+              .opError);
+}
+
 TEST_P(OfiTransportTest, GetIntoAGpuBuffer) {
   /* GPU-direct when the provider offers FI_HMEM and libfabric has ROCr;
    * through a host staging buffer otherwise. Either way the bytes end up

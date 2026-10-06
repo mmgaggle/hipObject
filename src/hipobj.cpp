@@ -710,7 +710,12 @@ hipObjError_t hipObjBufSync(void* devPtr, size_t size, off_t offset,
 }
 
 hipObjError_t hipObjGetRdmaToken(const void* devPtr, size_t size, int op,
-                                 char** outToken) try {
+                                 char** outToken) {
+  return hipObjGetRdmaTokenAt(devPtr, size, 0, op, outToken);
+}
+
+hipObjError_t hipObjGetRdmaTokenAt(const void* devPtr, size_t size,
+                                   size_t offset, int op, char** outToken) try {
   hipObj::DriverState& state = hipObj::getState();
   if (!state.initialized) {
     return {hipObjNotInitialized, 0};
@@ -730,7 +735,11 @@ hipObjError_t hipObjGetRdmaToken(const void* devPtr, size_t size, int op,
     if (!hipObj::g_ofi.isRegistered(ptr)) {
       return {hipObjBufNotRegistered, 0};
     }
-    std::string encoded = hipObj::g_ofi.makeToken(ptr, size, 0);
+    const size_t regSize = hipObj::g_ofi.lookupSize(ptr);
+    if (offset > regSize || size > regSize - offset) {
+      return {hipObjInvalidValue, 0};
+    }
+    std::string encoded = hipObj::g_ofi.makeToken(ptr, size, offset);
     if (encoded.empty()) {
       return {hipObjRdmaError, 0};
     }
@@ -740,8 +749,14 @@ hipObjError_t hipObjGetRdmaToken(const void* devPtr, size_t size, int op,
   if (!hipObj::g_bufferMap.lookupMr(const_cast<void*>(devPtr))) {
     return {hipObjBufNotRegistered, 0};
   }
+  const size_t regSize = hipObj::g_bufferMap.lookupSize(
+    const_cast<void*>(devPtr));
+  if (offset > regSize || size > regSize - offset) {
+    return {hipObjInvalidValue, 0};
+  }
   hipObj::RdmaToken token{};
-  if (!hipObj::buildRdmaToken(devPtr, size, 0, token)) {
+  if (!hipObj::buildRdmaToken(devPtr, size, static_cast<off_t>(offset),
+                              token)) {
     return {hipObjRdmaError, 0};
   }
   return hipObj::copyTokenOut(hipObj::encodeRdmaToken(token), outToken);

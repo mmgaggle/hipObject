@@ -22,6 +22,9 @@
   or against Ceph's `x-amz-rdma-checksum`, which covers the bytes delivered
   and so also checks a ranged GET. A mismatch returns the new
   `hipObjChecksumMismatch`.
+- `hipObjGetRdmaTokenAt()` mints a token for part of a registered buffer.
+  One registration then serves many concurrent ranged GETs, as a model
+  loader needs.
 - The get-object and put-object examples sign requests with SigV4 when
   `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set. get-object
   selects the libfabric transport with `HIPOBJ_OFI_PROVIDER` and verifies
@@ -35,6 +38,10 @@
   pass) is no longer enabled. The HIP runtime is still used via the
   `hip::host` CMake target. `CMAKE_HIP_COMPILER` no longer needs to be set
   when configuring.
+
+- `BUILD_SHARED_LIBS=ON` now builds `libhipobj.so`, as INSTALL.md
+  describes. The library was always static before. The default is still a
+  static library.
 
 ### Removed
 

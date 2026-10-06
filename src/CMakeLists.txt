@@ -41,9 +41,10 @@ if(HIPOBJ_IONIC)
     rdma/ionic/ionic-backend.cpp)
 endif()
 
+# Static unless BUILD_SHARED_LIBS is set. A shared library lets
+# applications, Python ones say, load hipObject at run time.
 hipobj_add_library(
   NAME hipobj
-  TYPE STATIC
   SRCS ${HIPOBJ_SOURCES})
 
 target_include_directories(hipobj
