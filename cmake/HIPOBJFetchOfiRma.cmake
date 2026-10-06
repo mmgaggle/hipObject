@@ -13,7 +13,7 @@ set(HIPOBJ_OFI_RMA_GIT_REPOSITORY
   "https://github.com/mmgaggle/ofi-rma.git"
   CACHE STRING "ofi-rma repository to fetch")
 set(HIPOBJ_OFI_RMA_GIT_TAG
-  "4bd04ecddbec3b44d033851aaa5353f20d860e95"
+  "4d5adf801bd1edd2cedeff3cd86f8d23e43934be"
   CACHE STRING "ofi-rma revision to fetch")
 
 find_package(ofi_rma 0.1 CONFIG QUIET)
