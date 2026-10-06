@@ -50,7 +50,34 @@ sudo make install
 | `HIPOBJ_INTEGRATION_TESTS` | ON | Build RC test server       |
 | `HIPOBJ_FETCH_CUOBJECT_CLIENT` | OFF | Fetch libcuobjclient 1.2.0.59 |
 | `HIPOBJ_FIND_CUOBJECT_SERVER` | OFF | Find libcuobjserver + probe |
+| `HIPOBJECT_OFI_API` | OFF | Build the libfabric transport (needs ofi-rma) |
 | `ROCM_PATH`        | /opt/rocm | Path to ROCm install       |
+
+## libfabric transport (`HIPOBJECT_OFI_API`)
+
+The libfabric transport sends an ofi1 token in place of a verbs token. Any
+server process that holds the token and runs the same libfabric provider can
+write a GET's data into the buffer. Ceph's OSDs use it to write their own
+stripes, so the data does not pass through the gateway. The transport serves
+GET only. The provider can be `tcp`, `shm`, `verbs;ofi_rxm` or a UET
+provider.
+
+The transport needs [ofi-rma](https://github.com/mmgaggle/ofi-rma) and
+libfabric 1.18 or later. CMake uses an installed ofi-rma when it finds one.
+Otherwise it fetches the source. To build from a local checkout, set
+`FETCHCONTENT_SOURCE_DIR_OFI_RMA`:
+
+```bash
+cmake -B build \
+  -DCMAKE_PREFIX_PATH=/opt/rocm \
+  -DHIPOBJECT_OFI_API=ON \
+  -DFETCHCONTENT_SOURCE_DIR_OFI_RMA=$HOME/src/ofi-rma
+```
+
+Call `hipObjInitOfi()` in place of `hipObjInit()`. To write straight into
+GPU memory, the provider must offer `FI_HMEM`, and libfabric must be built
+with ROCr support (`--with-rocr`). Otherwise GPU buffers are staged through
+host memory, unless `HIPOBJ_REQUIRE_GPU_DIRECT` is set.
 
 ## MinIO C++ RDMA bridge (`HIPOBJ_MINIO_CLIENT`)
 

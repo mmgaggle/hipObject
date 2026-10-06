@@ -46,6 +46,7 @@ target_include_directories(hipobj_test_objects
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/src/rdma
+    ${CMAKE_SOURCE_DIR}/src/ofi
     ${CMAKE_SOURCE_DIR}/src/s3)
 
 target_link_libraries(hipobj_test_objects
@@ -62,6 +63,10 @@ if(HIPOBJ_IONIC)
 endif()
 if(HIPOBJECT_V2_API)
   target_compile_definitions(hipobj_test_objects PRIVATE HIPOBJECT_V2_API)
+endif()
+if(HIPOBJECT_OFI_API)
+  target_compile_definitions(hipobj_test_objects PRIVATE HIPOBJECT_OFI_API)
+  target_link_libraries(hipobj_test_objects PUBLIC ofi_rma::ofi_rma)
 endif()
 
 hipobj_add_test(test-rdma-token
@@ -113,3 +118,12 @@ hipobj_add_test(test-seams
 
 hipobj_add_test(test-buffer-registration
   test-buffer-registration.cpp)
+
+if(HIPOBJECT_OFI_API)
+  # The libfabric transport over the tcp and shm providers, which need no
+  # RDMA hardware. An ofi-rma endpoint in the test plays the server.
+  hipobj_add_test(test-ofi-transport
+    test-ofi-transport.cpp)
+  target_link_libraries(test-ofi-transport PRIVATE ofi_rma::ofi_rma)
+  set_tests_properties(test-ofi-transport PROPERTIES TIMEOUT 120)
+endif()

@@ -26,6 +26,11 @@ if(HIPOBJECT_V2_API)
     rdma/v2-transport.cpp)
 endif()
 
+if(HIPOBJECT_OFI_API)
+  list(APPEND HIPOBJ_SOURCES
+    ofi/ofi-transport.cpp)
+endif()
+
 if(HIPOBJ_BNXT)
   list(APPEND HIPOBJ_SOURCES
     rdma/bnxt/bnxt-backend.cpp)
@@ -50,6 +55,7 @@ target_include_directories(hipobj
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/common
     ${CMAKE_CURRENT_SOURCE_DIR}/rdma
+    ${CMAKE_CURRENT_SOURCE_DIR}/ofi
     ${CMAKE_CURRENT_SOURCE_DIR}/s3)
 
 target_link_libraries(hipobj
@@ -74,6 +80,13 @@ if(HIPOBJECT_V2_API)
   # the exported CMake package) need it on their own translation units too.
   target_compile_definitions(hipobj
     PUBLIC HIPOBJECT_V2_API)
+endif()
+if(HIPOBJECT_OFI_API)
+  # PUBLIC for the same reason as HIPOBJECT_V2_API.
+  target_compile_definitions(hipobj
+    PUBLIC HIPOBJECT_OFI_API)
+  target_link_libraries(hipobj
+    PRIVATE ofi_rma::ofi_rma)
 endif()
 
 # The unit tests compile these same sources into a separate object

@@ -4,6 +4,16 @@
 
 ### Added
 
+- A libfabric transport, built with `-DHIPOBJECT_OFI_API=ON`.
+  `hipObjInitOfi()` lends registered buffers as libfabric windows and sends
+  an ofi1 token with each GET. Any server process that runs the same
+  provider can write the data, such as each Ceph OSD that holds a stripe.
+  GPU buffers are written directly when the provider offers `FI_HMEM` and
+  libfabric has ROCr support, and are staged through host memory otherwise.
+  The transport serves GET only: `hipObjPut()` returns the new
+  `hipObjOpNotSupported`. After a GET that fails, the buffer's window gets a
+  new key, so that a late write cannot land in it.
+
 ### Changed
 
 - hipObject is now built as plain C/C++ instead of HIP. It contains no GPU

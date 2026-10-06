@@ -56,6 +56,9 @@ function(hipobj_add_test TEST_NAME TEST_SOURCE)
   if(HIPOBJECT_V2_API)
     target_compile_definitions(${TEST_NAME} PRIVATE HIPOBJECT_V2_API)
   endif()
+  if(HIPOBJECT_OFI_API)
+    target_compile_definitions(${TEST_NAME} PRIVATE HIPOBJECT_OFI_API)
+  endif()
   target_include_directories(${TEST_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/shared

@@ -23,6 +23,8 @@ constexpr int IBV_ACCESS_REMOTE_READ = 0x1;
 constexpr int IBV_ACCESS_REMOTE_WRITE = 0x2;
 constexpr int IBV_ACCESS_LOCAL_WRITE = 0x4;
 
+} // namespace
+
 int validateRegistration(bool isRegistered, size_t entryCount, size_t size) {
   if (size > MAX_MR_SIZE) {
     return -1;
@@ -78,8 +80,6 @@ void freeOwnedHostBuffer(void* hostBuf) {
   }
   (void)hipHostFree(hostBuf);
 }
-
-} // namespace
 
 int BufferMap::registerBuffer(void* devPtr, size_t size, struct ibv_pd* pd) {
   uintptr_t key = reinterpret_cast<uintptr_t>(devPtr);

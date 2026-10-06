@@ -31,6 +31,11 @@ option(HIPOBJ_DOCS_ONLY
 option(HIPOBJECT_V2_API
   "Build the hipobj-rc-v2 control protocol" ON)
 
+# Declared here for the same reason: include/hipobj.h gates the libfabric
+# transport's declarations on this macro.
+option(HIPOBJECT_OFI_API
+  "Build the libfabric transport (ofi1 tokens, needs ofi-rma)" OFF)
+
 if(HIPOBJ_DOCS_ONLY)
   project(hipobj
     VERSION ${HIPOBJ_LIBRARY_VERSION}
@@ -56,6 +61,9 @@ include(HIPOBJClangTidy)
 include(HIPOBJAddLibraries)
 include(HIPOBJAddExecutable)
 include(HIPOBJFetchCuObject)
+if(HIPOBJECT_OFI_API)
+  include(HIPOBJFetchOfiRma)
+endif()
 
 set(HIPOBJ_CXX_STANDARD "17" CACHE STRING
   "C++ standard to build with")

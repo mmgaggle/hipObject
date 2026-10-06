@@ -28,11 +28,17 @@
 #include "v2-registry.h"
 #include "v2-transport.h"
 #endif
+#ifdef HIPOBJECT_OFI_API
+#include "ofi-transport.h"
+#endif
 
 namespace hipObj {
 
 static BufferMap g_bufferMap;
 static RcConnection g_conn;
+#ifdef HIPOBJECT_OFI_API
+static OfiTransport g_ofi;
+#endif
 
 static hipObjError_t handleException() {
   try {
@@ -180,11 +186,21 @@ static hipObjError_t stageCopyWithDeadline(void* dev, void* host, size_t size,
 }
 static hipObjError_t stageBuffer(void* devPtr, size_t size, off_t offset,
                                  bool toDevice) {
-  void* hostBuf = g_bufferMap.lookupHostBuf(devPtr);
+  void* hostBuf = nullptr;
+  size_t regSize = 0;
+#ifdef HIPOBJECT_OFI_API
+  if (getState().ofi) {
+    hostBuf = g_ofi.lookupHostBuf(devPtr);
+    regSize = g_ofi.lookupSize(devPtr);
+  } else
+#endif
+  {
+    hostBuf = g_bufferMap.lookupHostBuf(devPtr);
+    regSize = g_bufferMap.lookupSize(devPtr);
+  }
   if (!hostBuf) {
     return HIPOBJ_SUCCESS; /* the NIC reads and writes the caller's memory */
   }
-  size_t regSize = g_bufferMap.lookupSize(devPtr);
   if (offset < 0 || static_cast<size_t>(offset) + size > regSize) {
     return {hipObjInvalidValue, 0};
   }
@@ -219,6 +235,81 @@ static hipObjError_t runRdmaTransfer(const void* devPtr, size_t size,
   return HIPOBJ_SUCCESS;
 }
 
+/* Hand a minted token to the caller, who frees it with hipObjPutRdmaToken(). */
+static hipObjError_t copyTokenOut(const std::string& encoded, char** outToken) {
+  char* copy = static_cast<char*>(std::malloc(encoded.size() + 1));
+  if (!copy) {
+    return {hipObjInternalError, 0};
+  }
+  std::memcpy(copy, encoded.c_str(), encoded.size() + 1);
+  *outToken = copy;
+  return HIPOBJ_SUCCESS;
+}
+
+static void resetDriverState(DriverState& state) {
+  state.initialized = false;
+  state.gpuDevice = 0;
+  state.endpoint.clear();
+  state.region.clear();
+  state.nicHint.clear();
+  state.nicIndex = -1;
+  state.flags = 0;
+  state.ofi = false;
+}
+
+#ifdef HIPOBJECT_OFI_API
+static hipObjError_t ofiRegister(void* ptr, size_t size, bool hostMemory) {
+  if (!ptr) {
+    return {hipObjInvalidValue, 0};
+  }
+  if (g_ofi.isRegistered(ptr)) {
+    return {hipObjBufAlreadyRegistered, 0};
+  }
+  return g_ofi.registerBuffer(ptr, size, hostMemory) == 0
+           ? HIPOBJ_SUCCESS
+           : hipObjError_t{hipObjRdmaError, 0};
+}
+
+/* A GET over the libfabric transport. The server's writers place the object
+ * in the window before the reply comes back; the endpoint thread places it,
+ * so sync() orders this thread's reads (and the staging copy) after it. */
+static hipObjError_t runOfiGet(void* devPtr, size_t size, off_t offset,
+                               hipObjOps_t* ops, void* ctx) {
+  if (!g_ofi.isRegistered(devPtr)) {
+    return {hipObjBufNotRegistered, 0};
+  }
+  if (offset < 0) {
+    return {hipObjInvalidValue, 0};
+  }
+  std::string token = g_ofi.makeToken(devPtr, size,
+                                      static_cast<size_t>(offset));
+  if (token.empty()) {
+    return {hipObjRdmaError, 0};
+  }
+  bool completed = false;
+  hipObjError_t err = HIPOBJ_SUCCESS;
+  int rdmaStatus = 0;
+  if (injectRdmaToken(ops, ctx, token) != 0) {
+    err = {hipObjS3Error, 0};
+  } else if (receiveRdmaReply(ops, ctx, rdmaStatus) != 0 || rdmaStatus != 0) {
+    /* rdmaStatus -2 is a 501: the server sent the object in the HTTP body,
+     * which the caller's own callbacks received */
+    err = {hipObjS3Error, 0};
+  } else {
+    completed = true;
+    g_ofi.sync();
+    if (g_ofi.isDirectDevice(devPtr) &&
+        hipOps().hipDeviceSynchronize() != hipSuccess) {
+      err = {hipObjRdmaError, 0};
+    } else {
+      err = stageBuffer(devPtr, size, offset, true);
+    }
+  }
+  g_ofi.retire(devPtr, completed);
+  return err;
+}
+#endif /* HIPOBJECT_OFI_API */
+
 } // namespace hipObj
 
 extern "C" {
@@ -250,6 +341,10 @@ const char* hipObjGetErrorString(hipObjOpError_t err) {
         return "Size too large";
       case hipObjInternalError:
         return "Internal error";
+#ifdef HIPOBJECT_OFI_API
+      case hipObjOpNotSupported:
+        return "Operation not supported by the libfabric transport";
+#endif /* HIPOBJECT_OFI_API */
 #ifdef HIPOBJECT_V2_API
       case hipObjNotSupported:
         return "hipobj-rc-v2 not supported by server";
@@ -335,11 +430,57 @@ hipObjError_t hipObjInit(hipObjConfig_t* config) try {
   return hipObj::handleException();
 }
 
+#ifdef HIPOBJECT_OFI_API
+hipObjError_t hipObjInitOfi(hipObjConfig_t* config,
+                            const hipObjOfiConfig_t* ofi) try {
+  if (!config || !ofi || !ofi->provider || ofi->provider[0] == '\0') {
+    return {hipObjInvalidValue, 0};
+  }
+  hipObj::DriverState& state = hipObj::getState();
+  if (state.initialized) {
+    return {hipObjAlreadyInitialized, 0};
+  }
+  /* No verbs device and no NIC topology lookup: the provider and its domain
+   * name the NIC. A host without a GPU lends host buffers only. */
+  int gpuDevice = config->gpuDevice;
+  if (gpuDevice < 0) {
+    auto getDevice = hipObj::hipOps().hipGetDevice;
+    if (!getDevice || getDevice(&gpuDevice) != hipSuccess) {
+      gpuDevice = -1;
+    }
+  }
+  std::string err;
+  if (hipObj::g_ofi.open(*ofi, gpuDevice, &err) != 0) {
+    fprintf(stderr, "hipObj: libfabric endpoint (%s): %s\n", ofi->provider,
+            err.c_str());
+    return {hipObjRdmaError, 0};
+  }
+  state.initialized = true;
+  state.gpuDevice = gpuDevice;
+  state.endpoint = config->endpoint ? config->endpoint : "";
+  state.region = config->region ? config->region : "";
+  state.nicHint = ofi->domain ? ofi->domain : "";
+  state.nicIndex = -1;
+  state.flags = config->flags;
+  state.ofi = true;
+  return HIPOBJ_SUCCESS;
+} catch (...) {
+  return hipObj::handleException();
+}
+#endif /* HIPOBJECT_OFI_API */
+
 hipObjError_t hipObjShutdown(void) try {
   hipObj::DriverState& state = hipObj::getState();
   if (!state.initialized) {
     return HIPOBJ_SUCCESS;
   }
+#ifdef HIPOBJECT_OFI_API
+  if (state.ofi) {
+    hipObj::g_ofi.close();
+    hipObj::resetDriverState(state);
+    return HIPOBJ_SUCCESS;
+  }
+#endif
 #ifdef HIPOBJECT_V2_API
   std::lock_guard<std::mutex> apiGuard(hipObj::v2::apiLock());
   /* v2 first: release every connection (destroy retries included);
@@ -363,13 +504,7 @@ hipObjError_t hipObjShutdown(void) try {
 #endif /* HIPOBJECT_V2_API */
   hipObj::g_bufferMap.deregisterAll();
   hipObj::closeRdmaDevice(hipObj::g_conn);
-  state.initialized = false;
-  state.gpuDevice = 0;
-  state.endpoint.clear();
-  state.region.clear();
-  state.nicHint.clear();
-  state.nicIndex = -1;
-  state.flags = 0;
+  hipObj::resetDriverState(state);
   return HIPOBJ_SUCCESS;
 } catch (...) {
   return hipObj::handleException();
@@ -383,6 +518,11 @@ hipObjError_t hipObjBufRegister(void* devPtr, size_t size) try {
   if (size > hipObj::MAX_MR_SIZE) {
     return {hipObjSizeTooLarge, 0};
   }
+#ifdef HIPOBJECT_OFI_API
+  if (state.ofi) {
+    return hipObj::ofiRegister(devPtr, size, false);
+  }
+#endif
   if (hipObj::g_bufferMap.isRegistered(devPtr)) {
     return {hipObjBufAlreadyRegistered, 0};
   }
@@ -406,6 +546,11 @@ hipObjError_t hipObjBufRegisterHost(void* hostPtr, size_t size) try {
   if (size > hipObj::MAX_MR_SIZE) {
     return {hipObjSizeTooLarge, 0};
   }
+#ifdef HIPOBJECT_OFI_API
+  if (state.ofi) {
+    return hipObj::ofiRegister(hostPtr, size, true);
+  }
+#endif
   if (hipObj::g_bufferMap.isRegistered(hostPtr)) {
     return {hipObjBufAlreadyRegistered, 0};
   }
@@ -424,6 +569,16 @@ hipObjError_t hipObjBufDeregister(void* devPtr) try {
   if (!state.initialized) {
     return {hipObjNotInitialized, 0};
   }
+#ifdef HIPOBJECT_OFI_API
+  if (state.ofi) {
+    if (!hipObj::g_ofi.isRegistered(devPtr)) {
+      return {hipObjBufNotRegistered, 0};
+    }
+    return hipObj::g_ofi.deregisterBuffer(devPtr) == 0
+             ? HIPOBJ_SUCCESS
+             : hipObjError_t{hipObjRdmaError, 0};
+  }
+#endif
   if (!hipObj::g_bufferMap.isRegistered(devPtr)) {
     return {hipObjBufNotRegistered, 0};
   }
@@ -446,6 +601,11 @@ hipObjError_t hipObjGet(hipObjHandle_t handle, void* devPtr, size_t size,
   if (!ops) {
     return {hipObjInvalidValue, 0};
   }
+#ifdef HIPOBJECT_OFI_API
+  if (state.ofi) {
+    return hipObj::runOfiGet(devPtr, size, offset, ops, ctx);
+  }
+#endif
   if (!hipObj::g_bufferMap.lookupMr(devPtr)) {
     return {hipObjBufNotRegistered, 0};
   }
@@ -468,6 +628,12 @@ hipObjError_t hipObjPut(hipObjHandle_t handle, const void* devPtr, size_t size,
   if (!ops) {
     return {hipObjInvalidValue, 0};
   }
+#ifdef HIPOBJECT_OFI_API
+  if (state.ofi) {
+    /* Ceph reads the payload of a PUT with an ofi1 token over HTTP. */
+    return {hipObjOpNotSupported, 0};
+  }
+#endif
   if (!hipObj::g_bufferMap.lookupMr(const_cast<void*>(devPtr))) {
     return {hipObjBufNotRegistered, 0};
   }
@@ -491,6 +657,18 @@ hipObjError_t hipObjBufSync(void* devPtr, size_t size, off_t offset,
                   direction != HIPOBJ_SYNC_TO_DEVICE)) {
     return {hipObjInvalidValue, 0};
   }
+#ifdef HIPOBJECT_OFI_API
+  if (state.ofi) {
+    if (!hipObj::g_ofi.isRegistered(devPtr)) {
+      return {hipObjBufNotRegistered, 0};
+    }
+    /* After a GET made with hipObjGetRdmaToken(): order the reads, and the
+     * staging copy, after the writes the endpoint thread placed. */
+    hipObj::g_ofi.sync();
+    return hipObj::stageBuffer(devPtr, size, offset,
+                               direction == HIPOBJ_SYNC_TO_DEVICE);
+  }
+#endif
   if (!hipObj::g_bufferMap.isRegistered(devPtr)) {
     return {hipObjBufNotRegistered, 0};
   }
@@ -512,6 +690,22 @@ hipObjError_t hipObjGetRdmaToken(const void* devPtr, size_t size, int op,
   if (op != HIPOBJ_RDMA_OP_PUT && op != HIPOBJ_RDMA_OP_GET) {
     return {hipObjInvalidValue, 0};
   }
+#ifdef HIPOBJECT_OFI_API
+  if (state.ofi) {
+    if (op != HIPOBJ_RDMA_OP_GET) {
+      return {hipObjOpNotSupported, 0};
+    }
+    void* ptr = const_cast<void*>(devPtr);
+    if (!hipObj::g_ofi.isRegistered(ptr)) {
+      return {hipObjBufNotRegistered, 0};
+    }
+    std::string encoded = hipObj::g_ofi.makeToken(ptr, size, 0);
+    if (encoded.empty()) {
+      return {hipObjRdmaError, 0};
+    }
+    return hipObj::copyTokenOut(encoded, outToken);
+  }
+#endif
   if (!hipObj::g_bufferMap.lookupMr(const_cast<void*>(devPtr))) {
     return {hipObjBufNotRegistered, 0};
   }
@@ -519,14 +713,7 @@ hipObjError_t hipObjGetRdmaToken(const void* devPtr, size_t size, int op,
   if (!hipObj::buildRdmaToken(devPtr, size, 0, token)) {
     return {hipObjRdmaError, 0};
   }
-  std::string encoded = hipObj::encodeRdmaToken(token);
-  char* copy = static_cast<char*>(std::malloc(encoded.size() + 1));
-  if (!copy) {
-    return {hipObjInternalError, 0};
-  }
-  std::memcpy(copy, encoded.c_str(), encoded.size() + 1);
-  *outToken = copy;
-  return HIPOBJ_SUCCESS;
+  return hipObj::copyTokenOut(hipObj::encodeRdmaToken(token), outToken);
 } catch (...) {
   return hipObj::handleException();
 }
@@ -561,6 +748,13 @@ hipObjError_t hipObjTokenClientNic(const char* token, char* nicIp,
   if (!token || !nicIp || nicIpLen == 0) {
     return {hipObjInvalidValue, 0};
   }
+#ifdef HIPOBJECT_OFI_API
+  if (hipObj::isOfiToken(token)) {
+    return hipObj::parseClientNicFromOfiToken(token, nicIp, nicIpLen)
+             ? HIPOBJ_SUCCESS
+             : hipObjError_t{hipObjInvalidValue, 0};
+  }
+#endif
   if (!hipObj::parseClientNicFromTokenHex(token, nicIp, nicIpLen)) {
     return {hipObjInvalidValue, 0};
   }

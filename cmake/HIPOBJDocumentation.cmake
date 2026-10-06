@@ -83,11 +83,15 @@ if(HIPOBJ_BUILD_DOCS)
   # include/hipobj.h only declares the hipobj-rc-v2 API
   # when HIPOBJECT_V2_API is defined, so Doxygen needs it
   # too or those declarations vanish from the reference.
+  set(HIPOBJ_DOXYGEN_PREDEFINED "")
   if(HIPOBJECT_V2_API)
-    set(HIPOBJ_DOXYGEN_PREDEFINED
-      "PREDEFINED            += HIPOBJECT_V2_API")
-  else()
-    set(HIPOBJ_DOXYGEN_PREDEFINED "")
+    string(APPEND HIPOBJ_DOXYGEN_PREDEFINED
+      "PREDEFINED            += HIPOBJECT_V2_API\n")
+  endif()
+  # The libfabric transport's declarations are gated the same way.
+  if(HIPOBJECT_OFI_API)
+    string(APPEND HIPOBJ_DOXYGEN_PREDEFINED
+      "PREDEFINED            += HIPOBJECT_OFI_API\n")
   endif()
 
   # Configure Doxyfile (substitutes @VARIABLES@)

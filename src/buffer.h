@@ -15,6 +15,18 @@
 
 namespace hipObj {
 
+/* Registration rules shared by every transport's buffer map. */
+
+/* 0 when a buffer of this size may be registered, -1 when it is too large,
+ * already registered, or the map is full. */
+int validateRegistration(bool isRegistered, size_t entryCount, size_t size);
+/* Whether ptr is device memory, as the HIP seam reports it. */
+bool isDevicePointer(void* ptr);
+/* HIPOBJ_REQUIRE_GPU_DIRECT: refuse a host staging buffer for device memory. */
+bool requireGpuDirect();
+/* Free a staging buffer this library allocated with hipHostMalloc. */
+void freeOwnedHostBuffer(void* hostBuf);
+
 class BufferMap {
 public:
   static constexpr size_t kMaxEntries = 256;

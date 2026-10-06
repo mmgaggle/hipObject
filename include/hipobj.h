@@ -78,6 +78,9 @@ typedef enum {
   hipObjNotSupported, /*!< Server explicitly does not support hipobj-rc-v2 */
   hipObjBusy,         /*!< Server backpressure (503) and retries exhausted */
 #endif
+#ifdef HIPOBJECT_OFI_API
+  hipObjOpNotSupported, /*!< The active transport cannot do this operation */
+#endif
 } hipObjOpError_t;
 
 /*!
@@ -280,6 +283,57 @@ HIPOBJ_API hipObjError_t hipObjGet(hipObjHandle_t handle, void* devPtr,
 HIPOBJ_API hipObjError_t hipObjPut(hipObjHandle_t handle, const void* devPtr,
                                    size_t size, off_t offset, hipObjOps_t* ops,
                                    void* ctx);
+
+/* -------------------------------------------------------
+ *  LIBFABRIC TRANSPORT (ofi1 TOKENS)
+ * ------------------------------------------------------- */
+
+#ifdef HIPOBJECT_OFI_API
+
+/*!
+ * @brief Settings of the libfabric transport
+ * @ingroup core
+ *
+ * The provider must be the one the server's writers run: for Ceph, the
+ * OSDs' osd_ofi_provider. The strings are copied.
+ */
+typedef struct {
+  const char* provider; /*!< Required: "tcp", "verbs;ofi_rxm", "uet", ...  */
+  const char* domain;   /*!< RDMA device or interface, or NULL             */
+  const char* node;     /*!< Local address to bind, or NULL                */
+  const char* service;  /*!< Local port to bind, or NULL                   */
+} hipObjOfiConfig_t;
+
+/*!
+ * @brief Initialize hipObject with the libfabric transport
+ *
+ * Use this in place of hipObjInit(). Registered buffers become libfabric
+ * windows, and a GET sends an ofi1 token that names the window:
+ *
+ *   <base hex>:<size hex>:ofi1:<provider>:<endpoint name hex>:<key hex>
+ *
+ * Any server process that holds the token and runs the same provider writes
+ * the object straight into the buffer, with no connection to the client. Ceph
+ * forwards the token to its OSDs, so each OSD writes its own stripes. A GPU
+ * buffer is written directly when the provider offers FI_HMEM and libfabric
+ * has ROCr support; otherwise it is staged through host memory, as with
+ * hipObjInit(), unless HIPOBJ_REQUIRE_GPU_DIRECT is set.
+ *
+ * The transport serves GET only: hipObjPut() and a PUT token from
+ * hipObjGetRdmaToken() return hipObjOpNotSupported. Send a PUT's payload
+ * over HTTP. hipObjBufSync() also orders the caller's reads after the
+ * writes the transport placed, so call it after a GET made with
+ * hipObjGetRdmaToken(), even for a buffer that is not staged.
+ *
+ * @param config  Common settings, as for hipObjInit(); nicHint is unused
+ * @param ofi     libfabric settings
+ * @return hipObjError_t
+ * @ingroup core
+ */
+HIPOBJ_API hipObjError_t hipObjInitOfi(hipObjConfig_t* config,
+                                       const hipObjOfiConfig_t* ofi);
+
+#endif /* HIPOBJECT_OFI_API */
 
 /* -------------------------------------------------------
  *  hipobj-rc-v2 (TWO-ROUND-TRIP CONTROL PROTOCOL)

@@ -20,6 +20,9 @@ struct DriverState {
   std::string nicHint;
   int nicIndex = -1;
   uint32_t flags = 0;
+  /* Initialized with hipObjInitOfi(): buffers and tokens belong to the
+   * libfabric transport, not to the verbs connection. */
+  bool ofi = false;
 };
 
 /* Returns the library's driver state. Tests can install a substitute
