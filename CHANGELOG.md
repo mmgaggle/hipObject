@@ -10,6 +10,9 @@
   provider can write the data, such as each Ceph OSD that holds a stripe.
   GPU buffers are written directly when the provider offers `FI_HMEM` and
   libfabric has ROCr support, and are staged through host memory otherwise.
+  hipObject exports a GPU buffer as a dma-buf through ROCr and registers
+  that, so a direct write does not need a kernel built with
+  `CONFIG_DMABUF_MOVE_NOTIFY`, as libfabric's own export does.
   The transport serves GET only: `hipObjPut()` returns the new
   `hipObjOpNotSupported`. After a GET that fails, the buffer's window gets a
   new key, so that a late write cannot land in it.

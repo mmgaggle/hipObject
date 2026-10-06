@@ -83,6 +83,7 @@ private:
     size_t size = 0;
     void* hostBuf = nullptr; /* staging buffer this library owns, or null */
     bool device = false;     /* device memory lent directly */
+    int dmabufFd = -1;       /* the dma-buf the window was registered from */
   };
 
   void deregisterAllLocked();

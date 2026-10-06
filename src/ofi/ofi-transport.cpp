@@ -10,11 +10,13 @@
 #include <cstring>
 
 #include <hip/hip_runtime.h>
+#include <hsa/hsa_ext_amd.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <ofi_rma/ofi_rma.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include "buffer.h"
 #include "hip-seam.h"
@@ -105,12 +107,31 @@ int OfiTransport::registerBuffer(void* ptr, size_t size, bool hostMemory) {
     return 0;
   }
 
-  /* Device memory: lend it directly when the provider can reach it. */
+  /* Device memory: lend it directly when the provider offers FI_HMEM. First
+   * as a dma-buf that ROCr exports, the way the verbs path registers it,
+   * which needs nothing of libfabric's own export: that needs a kernel built
+   * with CONFIG_DMABUF_MOVE_NOTIFY. Then through libfabric's FI_HMEM. A
+   * provider without FI_HMEM can accept a dma-buf (tcp does) and still not
+   * place a write into it. */
   std::string why = "the provider offers no FI_HMEM";
   if (ep_->hmem()) {
     ofi_rma::memory_t dev;
     dev.iface = ofi_rma::memory_t::iface_t::rocr;
     dev.device = gpuDevice_ < 0 ? 0 : gpuDevice_;
+    int fd = -1;
+    uint64_t fdOffset = 0;
+    if (hsa_amd_portable_export_dmabuf(ptr, size, &fd, &fdOffset) ==
+        HSA_STATUS_SUCCESS) {
+      ofi_rma::memory_t dmabuf = dev;
+      dmabuf.dmabuf_fd = fd;
+      dmabuf.dmabuf_offset = fdOffset;
+      if (ep_->register_window(mem, size, dmabuf, &w) == 0) {
+        windows_[key] = {w.id, mem, size, nullptr, true, fd};
+        return 0;
+      }
+      why = ep_->last_error();
+      ::close(fd);
+    }
     if (ep_->register_window(mem, size, dev, &w) == 0) {
       windows_[key] = {w.id, mem, size, nullptr, true};
       return 0;
@@ -156,6 +177,9 @@ int OfiTransport::deregisterBuffer(void* ptr) {
   }
   ep_->deregister_window(it->second.id);
   freeOwnedHostBuffer(it->second.hostBuf);
+  if (it->second.dmabufFd >= 0) {
+    ::close(it->second.dmabufFd);
+  }
   windows_.erase(it);
   return 0;
 }
@@ -166,6 +190,9 @@ void OfiTransport::deregisterAllLocked() {
       ep_->deregister_window(w.id);
     }
     freeOwnedHostBuffer(w.hostBuf);
+    if (w.dmabufFd >= 0) {
+      ::close(w.dmabufFd);
+    }
   }
   windows_.clear();
 }
