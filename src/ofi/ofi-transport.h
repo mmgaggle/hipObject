@@ -66,9 +66,11 @@ public:
   void sync();
   /* After a GET into ptr: give its window a new key, so that a late or
    * duplicate write meant for this GET cannot land in the next one. Always
-   * after a GET that did not complete; after one that did, only when the
-   * provider re-keys in place, as the UET provider does for RUDI, where a
-   * duplicate can arrive after the reply. */
+   * after a GET that did not complete. After one that did, when duplicates
+   * are possible: over UET, whose RUDI mode places a retransmitted packet
+   * again even after the write completed, or when HIPOBJ_OFI_REKEY=always.
+   * Otherwise only when the provider can re-key in place, which is cheap.
+   * HIPOBJ_OFI_REKEY=failure limits it to GETs that did not complete. */
   void retire(void* ptr, bool completed);
 
   /* Provider, fabric, domain and memory modes, for logs. */
@@ -87,6 +89,8 @@ private:
 
   std::unique_ptr<ofi_rma::Endpoint> ep_;
   int gpuDevice_ = -1;
+  enum class RekeyPolicy { failure, cheap, always };
+  RekeyPolicy rekey_ = RekeyPolicy::cheap;
   mutable std::mutex mutex_;
   std::map<uintptr_t, Window> windows_;
 };

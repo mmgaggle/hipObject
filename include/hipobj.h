@@ -326,6 +326,11 @@ typedef struct {
  * writes the transport placed, so call it after a GET made with
  * hipObjGetRdmaToken(), even for a buffer that is not staged.
  *
+ * After a GET that failed, the buffer's window gets a new key, so a write
+ * that arrives late cannot land in it. Over UET it gets one after every
+ * GET: RUDI can place a retransmitted packet again after the write that
+ * carried it completed. HIPOBJ_OFI_REKEY=always or =failure overrides.
+ *
  * @param config  Common settings, as for hipObjInit(); nicHint is unused
  * @param ofi     libfabric settings
  * @return hipObjError_t

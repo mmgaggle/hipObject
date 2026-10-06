@@ -6,6 +6,7 @@
 #include "ofi-transport.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <hip/hip_runtime.h>
@@ -54,6 +55,17 @@ int OfiTransport::open(const hipObjOfiConfig_t& cfg, int gpuDevice,
     return -1;
   }
   gpuDevice_ = gpuDevice;
+  /* UET's RUDI mode retransmits without connection state, so a duplicate
+   * of a completed GET's write can arrive during the next GET. */
+  const char* policy = getenv("HIPOBJ_OFI_REKEY");
+  if (policy && std::strcmp(policy, "always") == 0) {
+    rekey_ = RekeyPolicy::always;
+  } else if (policy && std::strcmp(policy, "failure") == 0) {
+    rekey_ = RekeyPolicy::failure;
+  } else {
+    rekey_ = ep_->provider().rfind("uet", 0) == 0 ? RekeyPolicy::always
+                                                  : RekeyPolicy::cheap;
+  }
   return 0;
 }
 
@@ -217,7 +229,9 @@ void OfiTransport::retire(void* ptr, bool completed) {
    * replied only after its writes completed: after a GET that completed,
    * the window is quiet. Re-key it anyway when that is cheap, since an
    * unordered connectionless delivery mode can repeat a write late. */
-  if (completed && ep_->stats().rekey_in_place == 0) {
+  if (completed &&
+      (rekey_ == RekeyPolicy::failure ||
+       (rekey_ == RekeyPolicy::cheap && ep_->stats().rekey_in_place == 0))) {
     return;
   }
   const Window& w = it->second;
