@@ -320,16 +320,24 @@ typedef struct {
  * has ROCr support; otherwise it is staged through host memory, as with
  * hipObjInit(), unless HIPOBJ_REQUIRE_GPU_DIRECT is set.
  *
- * The transport serves GET only: hipObjPut() and a PUT token from
- * hipObjGetRdmaToken() return hipObjOpNotSupported. Send a PUT's payload
- * over HTTP. hipObjBufSync() also orders the caller's reads after the
- * writes the transport placed, so call it after a GET made with
- * hipObjGetRdmaToken(), even for a buffer that is not staged.
+ * A PUT sends the token with no body, and the server's processes read the
+ * object out of the buffer: Ceph's OSDs each pull a stripe (an OSD-direct
+ * PUT, rgw_rdma_osd_put). This needs a provider with RMA reads. Without
+ * them, hipObjPut() and a PUT token from hipObjGetRdmaToken() return
+ * hipObjOpNotSupported; send the payload over HTTP then. A server that
+ * cannot take a PUT out of band answers 501, which hipObjPut() returns as
+ * hipObjS3Error; send the payload over HTTP then too. Keep the buffer
+ * unchanged until the PUT returns. hipObjBufSync() also orders the
+ * caller's reads after the writes the transport placed, so call it after
+ * a GET made with hipObjGetRdmaToken(), even for a buffer that is not
+ * staged, and call it with HIPOBJ_SYNC_TO_HOST before a PUT made with a
+ * token from hipObjGetRdmaToken() into a staged buffer.
  *
- * After a GET that failed, the buffer's window gets a new key, so a write
- * that arrives late cannot land in it. Over UET it gets one after every
- * GET: RUDI can place a retransmitted packet again after the write that
- * carried it completed. HIPOBJ_OFI_REKEY=always or =failure overrides.
+ * After a GET or PUT that failed, the buffer's window gets a new key, so a
+ * write that arrives late cannot land in it, and a server can no longer
+ * read it. Over UET it gets one after every transfer: RUDI can place a
+ * retransmitted packet again after the write that carried it completed.
+ * HIPOBJ_OFI_REKEY=always or =failure overrides.
  *
  * @param config  Common settings, as for hipObjInit(); nicHint is unused
  * @param ofi     libfabric settings

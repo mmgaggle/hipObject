@@ -52,6 +52,9 @@ int OfiTransport::open(const hipObjOfiConfig_t& cfg, int gpuDevice,
    * that progresses manually places the writes only while it is polled. */
   c.progress_thread = true;
   c.hmem = gpuDevice >= 0;
+  /* For a PUT the server reads the buffer: ask for RMA reads. A provider
+   * without them still opens, and PUTs then send the body over HTTP. */
+  c.reads = true;
   ep_ = ofi_rma::Endpoint::open(c, err);
   if (!ep_) {
     return -1;
@@ -95,8 +98,15 @@ int OfiTransport::registerBuffer(void* ptr, size_t size, bool hostMemory) {
   }
   char* mem = static_cast<char*>(ptr);
   ofi_rma::Endpoint::window_t w;
+  /* The server writes a window for a GET, and reads it for a PUT. A token
+   * lets whoever holds it do both, so retire() re-keys the window after a
+   * transfer that did not complete. */
+  const unsigned access = ofi_rma::Endpoint::remote_write |
+                          (ep_->reads()
+                             ? unsigned(ofi_rma::Endpoint::remote_read)
+                             : 0u);
   if (hostMemory || !isDevicePointer(ptr)) {
-    if (ep_->register_window(mem, size, &w) < 0) {
+    if (ep_->register_window(mem, size, ofi_rma::memory_t{}, access, &w) < 0) {
       fprintf(stderr,
               "hipObj: libfabric registration of %zu bytes at %p failed: "
               "%s\n",
@@ -125,14 +135,14 @@ int OfiTransport::registerBuffer(void* ptr, size_t size, bool hostMemory) {
       ofi_rma::memory_t dmabuf = dev;
       dmabuf.dmabuf_fd = fd;
       dmabuf.dmabuf_offset = fdOffset;
-      if (ep_->register_window(mem, size, dmabuf, &w) == 0) {
+      if (ep_->register_window(mem, size, dmabuf, access, &w) == 0) {
         windows_[key] = {w.id, mem, size, nullptr, true, fd};
         return 0;
       }
       why = ep_->last_error();
       ::close(fd);
     }
-    if (ep_->register_window(mem, size, dev, &w) == 0) {
+    if (ep_->register_window(mem, size, dev, access, &w) == 0) {
       windows_[key] = {w.id, mem, size, nullptr, true};
       return 0;
     }
@@ -157,7 +167,8 @@ int OfiTransport::registerBuffer(void* ptr, size_t size, bool hostMemory) {
   if (err != hipSuccess || !hostBuf) {
     return -1;
   }
-  if (ep_->register_window(static_cast<char*>(hostBuf), size, &w) < 0) {
+  if (ep_->register_window(static_cast<char*>(hostBuf), size,
+                           ofi_rma::memory_t{}, access, &w) < 0) {
     fprintf(stderr,
             "hipObj: libfabric registration of a %zu-byte staging buffer "
             "failed: %s\n",
@@ -271,6 +282,11 @@ void OfiTransport::retire(void* ptr, bool completed) {
             ptr, r, ep_->last_error().c_str(),
             static_cast<long long>(ep_->key_quarantine().count()));
   }
+}
+
+bool OfiTransport::reads() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return ep_ && ep_->reads();
 }
 
 std::string OfiTransport::describe() const {

@@ -10,6 +10,7 @@
  *   put-object <size-bytes> --live URL   # libcurl + test server
  */
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -84,7 +85,23 @@ int main(int argc, char* argv[]) {
   cfg.gpuDevice = 0;
   cfg.nicHint = std::getenv("HIPOBJ_NIC_HINT");
 
-  hipObjError_t err = hipObjInit(&cfg);
+  hipObjError_t err;
+#if defined(HIPOBJECT_OFI_API)
+  /* HIPOBJ_OFI_PROVIDER selects the libfabric transport, as for
+   * get-object. The server's processes then read the buffer: Ceph's OSDs
+   * each pull a stripe of it (an OSD-direct PUT). */
+  hipObjOfiConfig_t ofi{};
+  ofi.provider = std::getenv("HIPOBJ_OFI_PROVIDER");
+  ofi.domain = std::getenv("HIPOBJ_OFI_DOMAIN");
+  ofi.node = std::getenv("HIPOBJ_OFI_NODE");
+  ofi.service = std::getenv("HIPOBJ_OFI_SERVICE");
+  if (ofi.provider && ofi.provider[0] != '\0') {
+    err = hipObjInitOfi(&cfg, &ofi);
+  } else
+#endif
+  {
+    err = hipObjInit(&cfg);
+  }
   if (err.opError != hipObjSuccess) {
     fprintf(stderr, "hipObjInit failed: %s\n",
             hipObjGetErrorString(err.opError));
@@ -97,6 +114,31 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "hipMalloc failed: %d\n", hip_err);
     hipObjShutdown();
     return 1;
+  }
+  {
+    /* a pattern a later GET can check: the object's CRC-64/NVME goes with
+     * the PUT, and get-object verifies the bytes it reads against it */
+    unsigned char* pattern = static_cast<unsigned char*>(malloc(objSize));
+    if (!pattern) {
+      (void)hipFree(devPtr);
+      hipObjShutdown();
+      return 1;
+    }
+    uint64_t x = 0x9e3779b97f4a7c15ull ^ objSize;
+    for (size_t i = 0; i < objSize; i++) {
+      x ^= x << 13;
+      x ^= x >> 7;
+      x ^= x << 17;
+      pattern[i] = static_cast<unsigned char>(x);
+    }
+    hip_err = hipMemcpy(devPtr, pattern, objSize, hipMemcpyHostToDevice);
+    free(pattern);
+    if (hip_err != hipSuccess) {
+      fprintf(stderr, "hipMemcpy failed: %d\n", hip_err);
+      (void)hipFree(devPtr);
+      hipObjShutdown();
+      return 1;
+    }
   }
 
   err = hipObjBufRegister(devPtr, objSize);

@@ -7,7 +7,7 @@
 # libhipobj links ofi-rma when it was built with the libfabric transport.
 if(@HIPOBJECT_OFI_API@)
   include(CMakeFindDependencyMacro)
-  find_dependency(ofi_rma 0.1)
+  find_dependency(ofi_rma 0.2)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/hipobj-targets.cmake")

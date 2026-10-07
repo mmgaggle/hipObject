@@ -35,12 +35,13 @@ struct ProviderParam {
   const char* node;
 };
 
-/* The storage server's side of one GET. */
+/* The storage server's side of one GET, or of one PUT that it pulls. */
 struct FakeServer {
   std::unique_ptr<ofi_rma::Endpoint> ep;
   std::vector<char> object;
   size_t objectOffset = 0;   /* the GET's offset into the object */
   bool write = true;         /* write the range before replying */
+  bool pull = false;         /* a PUT: read the window into object */
   std::string reply = "200"; /* x-amz-rdma-reply */
   std::string lastToken;
   int writeResult = 0;
@@ -49,6 +50,17 @@ struct FakeServer {
 int fakeSendRequest(void* ctx, const char* token, size_t tokenLen) {
   auto* s = static_cast<FakeServer*>(ctx);
   s->lastToken.assign(token, tokenLen);
+  if (s->pull) {
+    /* an OSD-direct PUT: read the object out of the client's window */
+    const auto t = ofi_rma::parse_token(s->lastToken);
+    if (!t) {
+      return -1;
+    }
+    s->object.assign(t->size, 0);
+    iovec iov{s->object.data(), t->size};
+    s->writeResult = s->ep->read(*t, &iov, 1, {{0, t->size, 0}}, kWriteBudget);
+    return s->writeResult == 0 ? 0 : -1;
+  }
   if (!s->write) {
     return 0;
   }
@@ -130,6 +142,7 @@ protected:
     c.node = p.node;
     c.stage_size = 4 << 20;
     c.stage_count = 2;
+    c.reads = true; /* a PUT's server pulls */
     std::string err;
     server_.ep = ofi_rma::Endpoint::open(c, &err);
     if (!server_.ep) {
@@ -254,18 +267,49 @@ TEST_P(OfiTransportTest, AFailedGetRetiresItsToken) {
   EXPECT_EQ(0, std::memcmp(buf.data(), server_.object.data(), n));
 }
 
-TEST_P(OfiTransportTest, PutIsNotSupported) {
-  const size_t n = 64 << 10;
-  std::vector<char> buf(n, 0);
+TEST_P(OfiTransportTest, PutLetsTheServerReadTheBuffer) {
+  /* an OSD-direct PUT: the request carries a token and no body, and the
+   * server reads the object out of the buffer */
+  const size_t n = 2 << 20;
+  std::vector<char> buf = pattern(n, 5);
   ASSERT_EQ(hipObjSuccess,
             hipObjBufRegisterHost(buf.data(), buf.size()).opError);
-  EXPECT_EQ(hipObjOpNotSupported,
+  server_.pull = true;
+  ASSERT_EQ(hipObjSuccess,
             hipObjPut(nullptr, buf.data(), n, 0, &ops_, &server_).opError);
+  ASSERT_EQ(n, server_.object.size());
+  EXPECT_EQ(0, std::memcmp(server_.object.data(), buf.data(), n));
+  const auto t = ofi_rma::parse_token(server_.lastToken);
+  ASSERT_TRUE(t);
+  EXPECT_EQ(n, t->size);
+
+  /* the token API names the same window for a PUT */
   char* token = nullptr;
-  EXPECT_EQ(
-    hipObjOpNotSupported,
+  ASSERT_EQ(
+    hipObjSuccess,
     hipObjGetRdmaToken(buf.data(), n, HIPOBJ_RDMA_OP_PUT, &token).opError);
-  EXPECT_EQ(nullptr, token);
+  ASSERT_NE(nullptr, token);
+  EXPECT_EQ(n, ofi_rma::parse_token(token)->size);
+  hipObjPutRdmaToken(token);
+}
+
+TEST_P(OfiTransportTest, DeclinedPutRetiresItsToken) {
+  /* a server that cannot take the PUT out of band answers 501; the caller
+   * sends the body, and the window no longer lets the server read it */
+  const size_t n = 64 << 10;
+  std::vector<char> buf = pattern(n, 9);
+  ASSERT_EQ(hipObjSuccess,
+            hipObjBufRegisterHost(buf.data(), buf.size()).opError);
+  server_.pull = true;
+  server_.reply = "501";
+  EXPECT_EQ(hipObjS3Error,
+            hipObjPut(nullptr, buf.data(), n, 0, &ops_, &server_).opError);
+  const auto stale = ofi_rma::parse_token(server_.lastToken);
+  ASSERT_TRUE(stale);
+  server_.reply = "200";
+  ASSERT_EQ(hipObjSuccess,
+            hipObjPut(nullptr, buf.data(), n, 0, &ops_, &server_).opError);
+  EXPECT_NE(stale->key, ofi_rma::parse_token(server_.lastToken)->key);
 }
 
 TEST_P(OfiTransportTest, TokenApiGetThenBufSync) {

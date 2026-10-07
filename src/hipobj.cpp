@@ -337,6 +337,54 @@ static hipObjError_t runOfiGet(void* devPtr, size_t size, off_t offset,
   g_ofi.retire(devPtr, completed);
   return err;
 }
+
+/* A PUT whose payload stays in the buffer: the server's OSDs read it out of
+ * the window that the token names (an OSD-direct PUT). The request carries
+ * no body. A server that cannot take it that way answers 501, and the
+ * caller then sends the body over HTTP. */
+static hipObjError_t runOfiPut(const void* constPtr, size_t size, off_t offset,
+                               hipObjOps_t* ops, void* ctx) {
+  void* devPtr = const_cast<void*>(constPtr);
+  if (!g_ofi.isRegistered(devPtr)) {
+    return {hipObjBufNotRegistered, 0};
+  }
+  if (offset < 0) {
+    return {hipObjInvalidValue, 0};
+  }
+  if (!g_ofi.reads()) {
+    /* the provider cannot let the server read the window */
+    return {hipObjOpNotSupported, 0};
+  }
+  /* the window must hold the bytes before the server reads them: copy a
+   * buffer staged through host memory, and wait for the GPU's writes to a
+   * buffer lent directly */
+  hipObjError_t err = stageBuffer(devPtr, size, offset, false);
+  if (err.opError != hipObjSuccess) {
+    return err;
+  }
+  if (g_ofi.isDirectDevice(devPtr) &&
+      hipOps().hipDeviceSynchronize() != hipSuccess) {
+    return {hipObjRdmaError, 0};
+  }
+  std::string token = g_ofi.makeToken(devPtr, size,
+                                      static_cast<size_t>(offset));
+  if (token.empty()) {
+    return {hipObjRdmaError, 0};
+  }
+  bool completed = false;
+  int rdmaStatus = 0;
+  if (injectRdmaToken(ops, ctx, token) != 0) {
+    err = {hipObjS3Error, 0};
+  } else if (receiveRdmaReply(ops, ctx, rdmaStatus) != 0 || rdmaStatus != 0) {
+    /* rdmaStatus -2 is a 501: the server stored nothing, and the caller
+     * sends the body instead */
+    err = {hipObjS3Error, 0};
+  } else {
+    completed = true;
+  }
+  g_ofi.retire(devPtr, completed);
+  return err;
+}
 #endif /* HIPOBJECT_OFI_API */
 
 } // namespace hipObj
@@ -661,8 +709,7 @@ hipObjError_t hipObjPut(hipObjHandle_t handle, const void* devPtr, size_t size,
   }
 #ifdef HIPOBJECT_OFI_API
   if (state.ofi) {
-    /* Ceph reads the payload of a PUT with an ofi1 token over HTTP. */
-    return {hipObjOpNotSupported, 0};
+    return hipObj::runOfiPut(devPtr, size, offset, ops, ctx);
   }
 #endif
   if (!hipObj::g_bufferMap.lookupMr(const_cast<void*>(devPtr))) {
@@ -728,7 +775,8 @@ hipObjError_t hipObjGetRdmaTokenAt(const void* devPtr, size_t size,
   }
 #ifdef HIPOBJECT_OFI_API
   if (state.ofi) {
-    if (op != HIPOBJ_RDMA_OP_GET) {
+    /* a PUT token lets the server read the window */
+    if (op == HIPOBJ_RDMA_OP_PUT && !hipObj::g_ofi.reads()) {
       return {hipObjOpNotSupported, 0};
     }
     void* ptr = const_cast<void*>(devPtr);
