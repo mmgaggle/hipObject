@@ -139,7 +139,9 @@ TEST(V2Wire, FinalPutOkWithChecksum) {
   std::string h = "X-Amz-Rdma-Protocol: hipobj-rc-v2\r\n";
   h += "X-Amz-Rdma-Cookie: deadbeef\r\n";
   h += "X-Amz-Rdma-Bytes-Transferred: 1024\r\n";
-  h += "X-Amz-Rdma-Checksum: CRC64NVME AAAAAAAAAAA=\r\n";
+  h += "X-Amz-Rdma-Checksum-Crc64nvme: AAAAAAAAAAA=\r\n";
+  /* a CRC-32C, which this library does not ask for, is ignored */
+  h += "X-Amz-Rdma-Checksum-Crc32c: AAAAAA==\r\n";
   hipObj::v2::FinalReply r;
   EXPECT_TRUE(parseFinalReply(204, h, r));
   EXPECT_EQ(r.checksumB64, "AAAAAAAAAAA=");
@@ -150,7 +152,7 @@ TEST(V2Wire, FinalChecksumNonCanonicalRejected) {
   std::string h = "X-Amz-Rdma-Protocol: hipobj-rc-v2\r\n";
   h += "X-Amz-Rdma-Cookie: deadbeef\r\n";
   h += "X-Amz-Rdma-Bytes-Transferred: 1024\r\n";
-  h += "X-Amz-Rdma-Checksum: CRC64NVME AAAAAAAAAAB=\r\n";
+  h += "X-Amz-Rdma-Checksum-Crc64nvme: AAAAAAAAAAB=\r\n";
   hipObj::v2::FinalReply r;
   EXPECT_FALSE(parseFinalReply(204, h, r));
 }
@@ -158,7 +160,7 @@ TEST(V2Wire, FinalChecksumNonCanonicalRejected) {
 TEST(V2Wire, FinalChecksumBadLengthRejected) {
   std::string h = "X-Amz-Rdma-Protocol: hipobj-rc-v2\r\n";
   h += "X-Amz-Rdma-Cookie: deadbeef\r\n";
-  h += "X-Amz-Rdma-Checksum: CRC64NVME AAAA=\r\n";
+  h += "X-Amz-Rdma-Checksum-Crc64nvme: AAAA=\r\n";
   hipObj::v2::FinalReply r;
   EXPECT_FALSE(parseFinalReply(204, h, r));
 }
@@ -179,15 +181,16 @@ TEST(V2Wire, FinalErrHasNoMandatoryCookie) {
 
 TEST(V2Wire, ChecksumTextValidation) {
   std::string out;
-  EXPECT_TRUE(validateChecksumText("CRC64NVME AAAAAAAAAAA=", out));
+  EXPECT_TRUE(validateChecksumText("AAAAAAAAAAA=", out));
   EXPECT_EQ(out, "AAAAAAAAAAA=");
-  /* a value with all of its bits in use: the check value of "123456789" */
-  EXPECT_TRUE(validateChecksumText("CRC64NVME rosUhgp5mIg=", out));
+  EXPECT_TRUE(validateChecksumText(" rosUhgp5mIg= ", out));
   EXPECT_EQ(out, "rosUhgp5mIg=");
-  EXPECT_FALSE(validateChecksumText("CRC64NV AAAAAAAAAAA=", out));
-  EXPECT_FALSE(validateChecksumText("CRC64NVME AAAAAAAAAAA", out));
-  EXPECT_FALSE(validateChecksumText("CRC64NVME AAAAAAAAAA==", out));
-  EXPECT_FALSE(validateChecksumText("CRC64NVME =AAAAAAAAAA=", out));
+  /* the value of x-amz-rdma-checksum-crc64nvme has no algorithm prefix */
+  EXPECT_FALSE(validateChecksumText("CRC64NVME AAAAAAAAAAA=", out));
+  EXPECT_FALSE(validateChecksumText("AAAAAAAAAAA", out));
+  EXPECT_FALSE(validateChecksumText("AAAAAAAAAA==", out));
+  EXPECT_FALSE(validateChecksumText("=AAAAAAAAAA=", out));
+  EXPECT_FALSE(validateChecksumText("AAAAAA==", out));  /* a CRC-32C */
 }
 
 TEST(V2Wire, SessionHex) {

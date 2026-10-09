@@ -42,7 +42,7 @@ constexpr const char* kReplyHeader = "X-Amz-Rdma-Reply";
 constexpr const char* kBytesHeader = "X-Amz-Rdma-Bytes-Transferred";
 constexpr const char* kEtagHeader = "X-Amz-Rdma-Etag";
 constexpr const char* kVersionHeader = "X-Amz-Rdma-Version-Id";
-constexpr const char* kChecksumHeader = "X-Amz-Rdma-Checksum";
+constexpr const char* kChecksumHeader = "X-Amz-Rdma-Checksum-Crc64nvme";
 constexpr const char* kControlPathPrefix = "/.hipobj-rc/";
 
 /* Wire limits. */
@@ -87,16 +87,17 @@ bool parsePrepareReply(int httpStatus, const std::string& headers,
                        PrepareReply& out);
 
 /* Parses the READY/FINAL response. Same conventions as parsePrepareReply.
- * The checksum field, when present, must be "CRC64NVME " followed by
- * exactly 12 canonical base64 characters (11 data + one trailing '=');
- * otherwise parsing fails. */
+ * The x-amz-rdma-checksum-crc64nvme field, when present, must be exactly
+ * 12 canonical base64 characters (11 data + one trailing '='); otherwise
+ * parsing fails. A x-amz-rdma-checksum-crc32c field is ignored: this
+ * library asks for CRC-64/NVME only. */
 bool parseFinalReply(int httpStatus, const std::string& headers,
                      FinalReply& out);
 
-/* Validates a canonical CRC64NVME checksum value: "CRC64NVME " prefix
- * plus 12 base64 chars where the last is '=' and the text round-trips
- * through strict decode/re-encode. Returns the 12-char text via out when
- * valid. */
+/* Validates a canonical CRC64NVME checksum value: 12 base64 chars, with
+ * optional surrounding whitespace, where the last is '=' and the text
+ * round-trips through strict decode/re-encode. Returns the 12-char text
+ * via out when valid. */
 bool validateChecksumText(const std::string& headerValue, std::string& out);
 
 /* Validates a session id (32 lowercase/uppercase hex chars). */

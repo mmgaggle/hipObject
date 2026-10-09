@@ -50,7 +50,7 @@ static int stubRecvReply(void* ctx, char* reply, size_t* replyLen) {
 
 #if defined(HIPOBJ_HAVE_CURL)
 /* Check the GET's bytes against the checksums the server sent: Ceph's
- * x-amz-rdma-checksum for the bytes delivered, and S3's
+ * x-amz-rdma-checksum-crc64nvme for the bytes delivered, and S3's
  * x-amz-checksum-crc64nvme for the whole object. */
 static int verifyChecksums(void* devPtr, size_t size,
                            const hipObjS3CurlCtx& ctx) {
@@ -64,7 +64,7 @@ static int verifyChecksums(void* devPtr, size_t size,
   struct {
     const char* header;
     const char* value;
-  } sums[] = {{"x-amz-rdma-checksum", ctx.rdmaChecksum},
+  } sums[] = {{"x-amz-rdma-checksum-crc64nvme", ctx.rdmaChecksum},
               {"x-amz-checksum-crc64nvme", ctx.objectChecksum}};
   int rc = 0;
   for (const auto& sum : sums) {

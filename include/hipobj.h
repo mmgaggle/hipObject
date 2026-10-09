@@ -595,10 +595,10 @@ hipObjChecksumCrc64Nvme(const void* devPtr, size_t size, off_t offset,
  * @brief Verify a buffer against a CRC64NVME checksum header
  *
  * Accepts the value of either header:
- * - x-amz-rdma-checksum: "CRC64NVME <base64>". Ceph sends it with an
+ * - x-amz-rdma-checksum-crc64nvme: "<base64>". Ceph sends it with an
  *   out-of-band GET, computed by the storage nodes from the bytes they
  *   placed. It covers exactly the bytes delivered, so it also checks a
- *   ranged GET.
+ *   ranged GET. The older form "CRC64NVME <base64>" is accepted too.
  * - x-amz-checksum-crc64nvme: "<base64>". S3 sends it for a GET with
  *   x-amz-checksum-mode: ENABLED and no range. It covers the whole object,
  *   so pass it only when the GET read the whole object.

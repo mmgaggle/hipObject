@@ -226,7 +226,7 @@ bool parseFinalReply(int httpStatus, const std::string& headers,
       out.etag = value;
     } else if (name == "x-amz-rdma-version-id") {
       out.versionId = value;
-    } else if (name == "x-amz-rdma-checksum") {
+    } else if (name == "x-amz-rdma-checksum-crc64nvme") {
       if (!validateChecksumText(value, out.checksumB64))
         return false;
     }
@@ -242,11 +242,7 @@ bool parseFinalReply(int httpStatus, const std::string& headers,
 }
 
 bool validateChecksumText(const std::string& headerValue, std::string& out) {
-  static const char kPrefix[] = "CRC64NVME ";
-  size_t plen = sizeof(kPrefix) - 1;
-  if (headerValue.compare(0, plen, kPrefix) != 0)
-    return false;
-  std::string text = trimOws(headerValue.substr(plen));
+  std::string text = trimOws(headerValue);
   if (!canonicalBase64_8Bytes(text))
     return false;
   out = text;

@@ -9,7 +9,7 @@
  * "rosUhgp5mIg=" for the check string "123456789". Two headers carry it:
  *
  *   x-amz-checksum-crc64nvme: <base64>            the whole object
- *   x-amz-rdma-checksum: CRC64NVME <base64>       the bytes delivered
+ *   x-amz-rdma-checksum-crc64nvme: <base64>       the bytes delivered
  *
  * The second is Ceph's: it covers exactly the bytes the server placed, so it
  * also checks a ranged GET, which S3's own checksum headers do not. */

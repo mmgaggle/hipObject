@@ -54,7 +54,7 @@ size_t headerCallback(char* buffer, size_t size, size_t nitems,
   std::string val;
   if (headerValue(line, "x-amz-rdma-reply:", val)) {
     std::snprintf(cfg->lastReply, sizeof(cfg->lastReply), "%s", val.c_str());
-  } else if (headerValue(line, "x-amz-rdma-checksum:", val)) {
+  } else if (headerValue(line, "x-amz-rdma-checksum-crc64nvme:", val)) {
     std::snprintf(cfg->rdmaChecksum, sizeof(cfg->rdmaChecksum), "%s",
                   val.c_str());
   } else if (headerValue(line, "x-amz-checksum-crc64nvme:", val)) {

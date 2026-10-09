@@ -110,7 +110,8 @@ TEST(Crc64NvmeApi, ChecksumsAndVerifiesAHostBuffer) {
   EXPECT_EQ(hipObjSuccess,
             hipObjVerifyCrc64Nvme(data.data(), data.size(), 0, b64).opError);
 
-  /* x-amz-rdma-checksum, for a range */
+  /* x-amz-rdma-checksum-crc64nvme, for a range, in the older
+   * "CRC64NVME <base64>" form, which is still accepted */
   const size_t ofs = 4096;
   const size_t len = 65536;
   const std::string range = "CRC64NVME " +
