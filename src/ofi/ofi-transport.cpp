@@ -14,7 +14,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <ofi_rma/ofi_rma.h>
+#include <ofi_rma/ofi_rma.hpp>
 #include <sys/socket.h>
 #include <unistd.h>
 

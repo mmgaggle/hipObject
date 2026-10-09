@@ -6,10 +6,11 @@
 /* libfabric transport: registered buffers are ofi-rma windows, and a GET's
  * token is an ofi1 token that names one.
  *
- *   <base hex>:<size hex>:ofi1:<provider>:<endpoint name hex>:<key hex>
+ *   <base hex>:<size hex>:ofi1:<wire>:<endpoint name hex>:<key hex>
  *
- * Any server process that holds the token and runs the same provider writes
- * into the window, with no connection to this client: Ceph's OSDs each write
+ * Any server process that holds the token and speaks the same wire protocol
+ * (rxm.1 for verbs;ofi_rxm, uet.<version> for any UET provider) writes into
+ * the window, with no connection to this client: Ceph's OSDs each write
  * their own stripes of a GET. An endpoint thread polls the provider, so the
  * writes land while the HTTP request is open, also on providers that
  * progress manually. */

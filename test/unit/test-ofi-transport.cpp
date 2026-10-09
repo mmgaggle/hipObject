@@ -21,7 +21,7 @@
 #include <hip/hip_runtime.h>
 
 #include <gtest/gtest.h>
-#include <ofi_rma/ofi_rma.h>
+#include <ofi_rma/ofi_rma.hpp>
 #include <sys/uio.h>
 
 #include "hipobj.h"
@@ -183,7 +183,7 @@ TEST_P(OfiTransportTest, GetPlacesTheObjectInAHostBuffer) {
   const auto t = ofi_rma::parse_token(server_.lastToken);
   ASSERT_TRUE(t);
   EXPECT_EQ(n, t->size);
-  EXPECT_EQ(server_.ep->provider(), t->provider);
+  EXPECT_EQ(server_.ep->wire(), t->wire);
   EXPECT_EQ(hipObjSuccess, hipObjBufDeregister(buf.data()).opError);
 }
 
