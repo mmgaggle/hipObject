@@ -89,8 +89,10 @@ bool canonicalBase64_8Bytes(const std::string& text) {
       re += tbl[(acc >> bits) & 0x3f];
     }
   }
-  while (re.size() < 11)
-    re += tbl[acc & 0x3f];
+  /* 64 bits are 10 sextets and 4 bits: the 11th character carries those
+   * 4 bits and two zero pad bits */
+  if (bits > 0)
+    re += tbl[(acc << (6 - bits)) & 0x3f];
   re += '=';
   return re == text;
 }

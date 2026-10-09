@@ -181,6 +181,9 @@ TEST(V2Wire, ChecksumTextValidation) {
   std::string out;
   EXPECT_TRUE(validateChecksumText("CRC64NVME AAAAAAAAAAA=", out));
   EXPECT_EQ(out, "AAAAAAAAAAA=");
+  /* a value with all of its bits in use: the check value of "123456789" */
+  EXPECT_TRUE(validateChecksumText("CRC64NVME rosUhgp5mIg=", out));
+  EXPECT_EQ(out, "rosUhgp5mIg=");
   EXPECT_FALSE(validateChecksumText("CRC64NV AAAAAAAAAAA=", out));
   EXPECT_FALSE(validateChecksumText("CRC64NVME AAAAAAAAAAA", out));
   EXPECT_FALSE(validateChecksumText("CRC64NVME AAAAAAAAAA==", out));
